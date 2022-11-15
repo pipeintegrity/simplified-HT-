@@ -1,0 +1,820 @@
+---
+title: "Simplified Hyperbolic Tangent"
+author: "Authors TBD"
+format: docx
+editor: visual3
+chunk_output_type: console
+execute:
+  echo: false
+  warning: false
+  fig-width: 6.5
+---
+
+# Hyperbolic Tangent
+
+When performing Charpy V-notch testing over multiple temperatures the result will be a sigmoidal-shaped curve that is asymptotic at the upper and lower temperatures as seen in @fig-pltdata. But the relationship between the temperature and Absorbed Energy (AE) or Shear Area (SA) is not the classic sigmoid function but a hyperbolic tangent (HT) function with four independent coefficients (A, B, C, D) shown in @eq-HT.
+
+```{r}
+#| label: read-data
+
+library(readxl)
+library(tidyverse)
+library(tidymodels)
+library(here)
+library(minpack.lm)
+library(patchwork)
+library(latex2exp)
+
+theme_set(theme_minimal(13))
+
+## Read data in------------------------------------
+tim_cvn <-
+  read_excel(here("timp_met_charpy_clean_rev02.xlsx"),
+             sheet = "Charpy") %>%
+  janitor::clean_names() %>%
+  rename(
+    location = specimen_location,
+    temp_f = test_temperature_f,
+    charpy_thickness_mm = specimen_thickness_mm,
+    cvn_ss_ft_lbs = measured_energy_absorbed_ft_lbs,
+    sa_ss = shear_area_percent
+  ) %>%
+  mutate(across(temp_f:sa_ss, as.numeric),
+         sa_ss = as.numeric(str_remove(
+           string = sa_ss, pattern = c("<", ">")
+         ))) %>%
+  filter(
+    str_detect(location, "Base Metal"),
+    #removing weld tests
+    str_detect(single_or_multiple_temperature_test, "Multiple"),
+    #remove single temp tests
+    str_detect(full_transition_curve, "Yes"),
+    sa_ss <= 100
+  ) %>% #removing shear areas greater than 100
+  select(id,
+         bar_orientation,
+         charpy_thickness_mm,
+         temp_f,
+         cvn_ss_ft_lbs,
+         sa_ss) %>% 
+  rename(cvn = cvn_ss_ft_lbs)
+ 
+#list of id that max is less than 90%
+idlist <- tim_cvn %>% 
+  group_by(id) %>% 
+  summarise(mx_sa=max(sa_ss)) %>% 
+  filter(mx_sa<90)
+
+temp_id_list <- tim_cvn %>% 
+  group_by(id, temp_f) %>% 
+  summarise(unique(temp_f)) %>% 
+  mutate(count = n()) %>% 
+  filter(count<4)
+
+`%notin%` <- Negate(`%in%`) # not in special function
+
+tim_cvn <- tim_cvn %>% 
+  filter(id %notin% idlist$id,
+         id %notin% temp_id_list$id)
+
+ids <- unique(tim_cvn$id) #create vector of ids
+
+## Select which id to use ----------------------------------------
+idx <- 3 #start index at 1
+
+# inital estiamtes for A, B, C, D for SA solution
+
+cvn_data <- tim_cvn %>% 
+  filter(id==ids[idx])
+
+Ai_sa <- 51 #initial estimates A + B <= 100
+Bi_sa <- 49 #initial estimates
+Ci <-  IQR(cvn_data$temp_f) / 2 #inner quartile range/2 = Ci
+Di <- (cvn_data$temp_f[which.min(abs(50 - cvn_data$sa_ss))]) 
+# Di = what temp is closest to 50% SA
+
+
+# hyperbolic tangent function
+func <- function(t, A, B, C, D) {
+  A + B * tanh((t - D) / C)
+}
+
+
+# SA solution ----------------------------------------------
+fit_sa <-
+  nlsLM(
+    sa_ss ~ func(temp_f, A, B, C, D),
+    data = cvn_data ,
+    start = list(
+      A = Ai_sa,
+      B = Bi_sa,
+      C = Ci,
+      D = Di
+    ),
+    trace = F
+  )
+
+# simplified SA HT method ------------
+fit_sa_simp <-
+  nlsLM(
+    sa_ss ~ func(temp_f,Ai_sa, Bi_sa, C, D),
+    data = cvn_data ,
+    start = list(
+      C = Ci,
+      D = Di
+    ),
+    trace = F
+  )
+
+
+SA_coefs_gen <- tidy(fit_sa,conf.int = TRUE) %>% 
+  mutate(model="General Solution")
+
+SA_coefs_simp <- tidy(fit_sa_simp,conf.int = TRUE) %>% 
+  mutate(model="Simplfied HT")
+
+# linearize the data -----------------------------------------
+cvn_data <- cvn_data %>%
+  mutate(k1 = atanh((sa_ss - Ai_sa) / Bi_sa))
+
+# AE solution -------------------------------------------------
+
+# intital values for AE solution
+ae_init <- cvn_data %>% 
+  summarise(Ai_ae = max(cvn)/2,
+                     Bi_ae = (max(cvn) - min(cvn))/2)
+
+
+fit_cvn <-
+  nlsLM(
+    cvn ~ func(temp_f, A, B, C, D),
+    data = cvn_data ,
+    start = list(
+      A = ae_init$Ai_ae,
+      B = ae_init$Bi_ae,
+      C = Ci,
+      D = Di
+    ),
+    trace = F
+  )
+
+
+sa_sols <- tibble(C = SA_coefs_simp$estimate[1], D =SA_coefs_simp$estimate[2])
+
+fit_cvn_simp <-
+  nlsLM(
+    cvn ~ func(temp_f, A, B, sa_sols$C, sa_sols$D),
+    data = cvn_data ,
+    start = list(
+      A = ae_init$Ai_ae,
+      B = ae_init$Bi_ae
+    ),
+    trace = F
+  )
+
+AE_gen_coefs <- tidy(fit_cvn, conf.int = TRUE) %>% 
+  mutate(model = "General Solution")
+
+AE_coefs_simp <- tidy(fit_cvn_simp, conf.int = TRUE) %>% 
+  mutate(model = "Simplified HT")
+
+```
+
+```{r}
+#| label: fig-pltdata
+#| fig-cap: "Example CVN Data"
+#| dpi: 300
+#| fig-height: 5
+
+# Note: put a space between "#|" and parameter otherwise it won't recognize it
+
+sa_plt <- cvn_data %>% 
+  ggplot(aes(temp_f, sa_ss))+
+  geom_point()+
+  labs(title = "Shear Area vs. Temperature",
+       x = sprintf("Temperature (\u00B0F)"), 
+       y = "Shear Area (%)")
+
+cvn_plt <- cvn_data %>% 
+  ggplot(aes(temp_f, cvn))+
+  geom_point()+
+  labs(title = "Absorbed Energy vs. Temperature",
+       x = sprintf("Temperature (\u00B0F)"),
+       y = "Absorbed Energy (ft-lbs)")
+
+sa_plt /cvn_plt
+
+```
+
+$$
+\begin{align}&SA \ (or\ AE)=A +B \ tanh\left(\frac{T- D}{C}\right)\\&Where:\\&A,B,C,D = Regression \ Coefficients\\&T = Temperature\\&SA = Shear \ Area\\ &AE = Absorbed \ Energy \end{align}
+$$ {#eq-HT}
+
+The physical meaning of the four coefficients is shown in @fig-HT. The upper shelf absorbed energy or maximum shear area are equal to $A + B$ and the lower shelf and minimum shear area are $A - B$. The shear appearance transition temperature (SATT) is the temperature that corresponds to 85% shear area. If the material is tested throughout the entire temperature range so as to capture all or part of the asymptotic portion of the curves the upper and lower ranges can be approximated by plotting the data. However, if only part of the curve is tested, the upper and lower shelf is a rough guess at best and estimating the SATT is even more difficult without regressing the data to the hyperbolic tangent.
+
+```{r}
+#| label: fig-HT
+#| fig-cap: "Hyperbolic Tangent"
+#| dpi: 300
+
+tdy_cvn <- tidy(fit_cvn)
+A <- tdy_cvn$estimate[1]
+B <- tdy_cvn$estimate[2]
+C <- tdy_cvn$estimate[3]
+D <- tdy_cvn$estimate[4]
+
+US = A + B
+LS = A - B
+
+mtf <- min(cvn_data$temp_f)
+
+T2 <- cvn_data %>% slice_max(order_by = cvn, n = 2) #top 2
+B2 <- cvn_data %>% slice_min(order_by = cvn, n = 2) #bottom 2
+slope <- B / C # slope of tangent
+
+AL <- mean(T2$temp_f-(D+C))#Arc length
+theta <- atan(slope) #Angle
+d <- AL *sin(theta) #vertical distance of arc
+l_prime <- AL*cos(theta) #Hztl. projection of arc
+mint <-mtf
+maxt <- max(cvn_data$temp_f)
+# Calculate locations for labels -----------------------------------
+
+AD <- tibble(
+  x = c(mtf,
+        D,
+        D),
+  y = c(A,
+        A,
+        0)
+)
+
+OD <- tibble(
+  x = c(
+    mtf,
+    D - C,
+    D + 1.5 * C
+  ),
+  y = c(
+    LS,
+    LS,
+    LS +
+      2.5 * C * slope
+  )
+)
+
+LU <-
+  tibble(
+    x = c(
+     D + C,
+      D + C
+    ),
+    y = c(LS-6, 
+         US)
+  )
+
+CV = tibble(x = c(mean(T2$temp_f), mean(T2$temp_f)-7.5),
+            y = c(US, US + slope*(mean(T2$temp_f)-7.5 - D - C)))
+
+minc <- min(cvn_data$cvn)
+##  Plot function -----------------------------------------------
+plt_cvn <- cvn_data %>%
+  ggplot(aes(temp_f, cvn)) +
+  geom_point() +
+  stat_function(fun = func,
+                args = list(A,
+                            B,
+                            C,
+                            D),
+                col='orangered') +
+  theme_minimal() +
+  labs(
+       x ="Temperature", 
+       y = "Absorbed Energy or Shear Area"
+       )+
+  theme(axis.text.y = element_blank(), 
+        axis.ticks.y = element_blank(),
+        axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank(),
+        plot.margin = margin(0.5,0.5,0.5,0.5,"cm"))
+
+# annotate plot ---------------------------------------
+plt_cvn +
+  geom_line(data = AD,
+            aes(x, y),
+            lty = 2,
+            col = 'grey25', alpha=0.75) +
+  geom_line(data = OD,
+            aes(x, y),
+            lty = 1,
+            col = 'grey25', alpha=0.75) +
+  geom_line(data = LU,
+            aes(x, y),
+            lty = 1,
+            col = 'grey25', alpha=0.75) +
+  geom_linerange(aes(x = D - C, ymin = 0, ymax = LS),
+                 col='grey25', alpha=0.75) +
+  geom_linerange(aes(x = D + C, ymin = 0, ymax = US), 
+                 col='grey25', alpha=0.75) +
+  geom_segment(
+    data = NULL,
+    aes(
+      x = D - C,
+      xend = D,
+      y = minc - 1,
+      yend = minc - 1
+    ) ,
+    arrow = arrow(
+      ends = "both",
+      length = unit(0.075, "inches"),
+      type = "closed"
+    )
+  ) +
+  geom_segment(
+    data = NULL,
+    aes(
+      x = D ,
+      xend = D + C,
+      y = minc - 1,
+      yend = minc - 1
+    ) ,
+    arrow = arrow(
+      ends = "both",
+      length = unit(0.075, "inches"),
+      type = "closed"
+    )
+  ) +
+  geom_hline(yintercept = A + B,
+             col = 'grey25', alpha=0.75) +
+  geom_curve(
+    data = CV,
+    aes(
+      x = x[1],
+      xend = x[2],
+      y = y[1],
+      yend = y[2]
+    ),
+    arrow = arrow(
+      ends = "both",
+      length = unit(0.075, "inches"),
+      type = "closed"
+    )
+  ) +
+  annotate(
+    "text",
+    x = mean(T2$temp_f) + 7.5,
+    y = sum(CV$y) / 2 + 2,
+    label = "B/C"
+  ) +
+  annotate(
+    "text",
+    x = c(sum(D, D - C) / 2, sum(D, D + C) / 2),
+    y = c(minc + 2, minc + 2),
+    label = c("C", "C")
+  ) +
+  annotate("text",
+           x = D,
+           y = LS - 5,
+           label = "D") +
+  geom_segment(
+    aes(
+      x = mint + 5,
+      xend = mint + 5,
+      y = LS,
+      yend = A
+    ),
+    arrow = arrow(
+      ends = "both",
+      length = unit(0.075, "inches"),
+      type = "closed"
+    )
+  ) +
+  geom_segment(
+    aes(
+      x = mint + 5,
+      xend = mint + 5,
+      y = US,
+      yend = A
+    ),
+    arrow = arrow(
+      ends = "both",
+      length = unit(0.075, "inches"),
+      type = "closed"
+    )
+  ) +
+  annotate(
+    "text",
+    x = c(mint + 10, mint + 10),
+    y = c(mean(c(LS, A)), mean(c(US, A))),
+    label = c("B", "B")
+  ) +
+  annotate("text",
+           x = mint - 5,
+           y = A,
+           label = "A") 
+```
+
+# Solution to Hyperbolic Tangent
+
+Unfortunately, there is no closed-form solution to @eq-HT, solving it requires one of several numerical methods known as non-linear least squares (NLS) regression. Any type of regression technique (non-linear or linear) seeks to minimize the sum of the squares of the residuals (RSS). The residual is the difference between the observed (measured) $y$ value, $y_i$ and the predicted value of the model $\hat{y}$. 
+
+Therefore the quantity to minimize is shown in @eq-rss.
+
+$$
+RSS = \sum_{i =1}^n (y_i - \hat{y})^2
+$$ {#eq-rss}
+
+Since the ability to solve this non-linear regression is relying on numerical optimization methods it requires initial starting values for the four coefficients for the algorithm. The down side to some of these methods is that if the initial values are poor or if there are several outliers in the data the solution can fail to converge or get "stuck" in a local minimum and return a solution that is far from optimal. 
+
+However, with some of simplifying assumptions the hyperbolic non-linear tangent can be transformed to a linear regression model that does have a closed-form solution to minimize the RSS through ordinary least squares regression (OLS) regression of the form $y_i = \alpha x_i + \beta + \epsilon_i$ where $\epsilon_i$ is the residual error. The benefit to the OLS regression methodology is that since the solution is closed form it is guaranteed to find the optimum solution for the given data, in addition it can be done in a spreadsheet or even by hand if needed. In the OLS solution, $\alpha$ and $\beta$ are estimated such as to minimize $\epsilon_i$. Since it is a given that the minimum and maximum percent SA is physically bounded by 0 and 100 therefore $A + B\leq 100$ and $A - B \leq 100$. Also looking at @fig-HT it can be seen that the value of $A$ and $B$ are similar with $A$ being only slightly larger than $B$. Therefore a reasonable initial estimate for $A$ and $B$ for the SA solution would be about 51 and 49 respectively. Now that $A$ and $B$ are fixed values, that leaves the @eq-HT with only two unknowns and rearranging the terms and solving for temperature produces the more useful form of $T = C \ atanh\left(\frac{SA - A}{B}\right)+ D$ and since everything in the argument for the $atanh$ is known, the entire $atanh$ term becomes an independent variable $k_1 = atanh\left(\frac{SA -A}{B}\right)$ and the HT function is transformed into a linear equation, $T = C\ k_1+D$ which can be solved by OLS regression. The solution to this will produce two coefficients, slope and intercept corresponding to the $C$ and $D$ respectively. Referring to @fig-HT observe that $D$ is the center of the linear transition area between the upper and lower asymptote and and appears to be approximately the same for SA or AE when looking at @fig-pltdata. Using this assumption and the solution from SA, @eq-HT can again be linearized to be solved by OLS regression. Since $C_{sa}$ and $D_{sa}$ (subscript indicates that they are from the SA solution) are known from the SA solution, inserting them into @eq-HT, all the terms in the $tanh$ function are known and it can be reduced to $k_2 = tanh\left(\frac{T-D_{sa}}{C_{sa}}\right)$ and the HT equation becomes, $AE = A + B \ k_2$ which can also be solved with OLS regression. 
+
+Using the same simplifying assumptions mentioned in this section the problem can also be solved using NLS. This can be helpful if the NLS solution does not converge trying to solve all four coefficients at once for some reason and a more accurate solution is desired.
+
+# Results
+
+While this appears to be a workable solution, it does involve some assumptions. To judge the suitability of this solution it will be used to solve the example data shown in @fig-pltdata and the results will be compared to the general solution where all four coefficients are solved simultaneously without the simplifying assumptions. Since any model is an approximation to a physical phenomena and any measurement is going to have some amount of error regardless of precision there is uncertainty in the solutions which are represented by the standard errors for the coefficients. Note that since $A$ and $B$ were assumed for the SA solution there is no confidence intervals or standard error for the OLS solution so they are set to zero. The results are plotted in @fig-sa.coefsCI.
+
+```{r}
+#| label: tbl-results
+#| tbl-cap: "Comparison of Results"
+
+fit_sa_lm <- lm(temp_f ~ k1, data = cvn_data) 
+
+sa_lm_coefs <- tidy(fit_sa_lm, conf.int = TRUE) %>%
+  mutate(term = ifelse(term == "k1", "C", "D"))
+
+sa_coefs_all <-  sa_lm_coefs %>%
+  bind_rows(tibble(term = c("A", "B"),
+                   estimate = c(51, 49))) %>%
+  mutate(model = "Simplified OLS") %>%
+  bind_rows(SA_coefs_simp) %>% 
+  bind_rows(tibble(term = c("A", "B"),
+                   estimate = c(51, 49), model = "Simplified HT")) %>%
+  mutate(term = case_when(term == "(Intercept)" ~ "D",
+                          term == "k1" ~ "C",
+                          TRUE ~ term)) %>%
+  bind_rows(SA_coefs_gen) %>%
+  mutate(across(.cols = everything(), ~ ifelse(is.na(.), 0, .))) %>%
+  arrange(term, model)
+
+sa_coefs_all %>%
+  select(-c(p.value, statistic)) %>%
+  mutate(across(.cols = where(is.numeric), ~ round(., 2))) %>%
+  kableExtra::kable(format = "pipe")
+
+
+```
+
+# SA Coefficients
+
+```{r}
+#| label: fig-sa.coefsCI
+#| fig-cap: "Coefficient Confidence Intervals for Shear Area Solutions"
+#| fig-width: 6.5
+
+sa_coefs_all %>%
+  filter(term == "C" | term == "D") %>%
+  ggplot() +
+  geom_errorbarh(aes(
+    xmin = conf.low,
+    xmax = conf.high,
+    y = model,
+    col = model
+  ),
+  lwd = 1) +
+  geom_point(aes(estimate, model), size = 3) +
+  facet_wrap(~ term, scales = "free_x") +
+  labs(x = "Termperature (\u00B0F)",
+       y = "Method",
+       col = "Method") +
+  ggsci::scale_color_startrek()
+
+```
+
+# Plot of SA Solutions
+
+Though there are visible differences in the model fit that can be seen in @fig-solplt especially through the transition area. However, at the 85% shear appearance area the two models start to converge though some differences are still evident. To demonstrate these differences the 95% confidence intervals are shown in the plot.
+
+```{r}
+#| label: fig-solplt
+#| fig-cap: "Solutions Plot"
+#| dpi: 300
+#| fig-width: 6.5
+
+func_ht <- function(temp_f, A, B, C, D) {
+  A + B * tanh((temp_f - D) / C)
+}
+
+cols <- c("General" = "red", "Simplified OLS" = "blue")
+
+cvn_data %>%
+  ggplot(aes(temp_f, sa_ss)) +
+  geom_point() +
+  stat_function(
+    fun = func_ht,
+    args = list(
+      sa_coefs_all$estimate[1],
+      sa_coefs_all$estimate[3],
+      sa_coefs_all$estimate[5],
+      sa_coefs_all$estimate[7]
+    ),
+    aes(col = "General"),
+    lwd = 1, 
+    n = 301
+  ) +
+   stat_function(
+    fun = func_ht,
+    args = list(
+      sa_coefs_all$estimate[2],
+      sa_coefs_all$estimate[4],
+      sa_coefs_all$estimate[6],
+      sa_coefs_all$estimate[8]
+    ),
+    aes(col = "Simplified OLS"),
+    lwd =1, 
+    n = 301
+  ) +
+  geom_hline(yintercept = 85, 
+             col='grey50', 
+             lty =2, 
+             lwd = 0.65)+
+  scale_y_continuous(breaks = scales::pretty_breaks())+
+  labs(x = "Temperature (\u00B0F)", 
+       y = "Shear Area (%)")+
+  annotate("text", x = 20, y = 85, label = "SATT", vjust = -0.5)+
+  scale_color_manual(values = cols,
+                     breaks = c("General", "Simplified OLS"), 
+                     name = "Solution")
+
+```
+
+# Comparison of SATT
+
+This compares the confidence intervals of the SATT for the two methods . The mean estimated SATT is nearly equal for the two methods but the width of the confidence interval for the OLS method is smaller due to $A$ and $B$ being fixed with no error associated with them. Since the two 95% confidence intervals overlap it indicates that given the uncertainty in either model the differences in the predicted SATT are not significant at a 95% confidence level.
+
+```{r}
+#| label: fig-satterr
+#| fig-cap: "Confidence Interval of SATT"
+#| fig-width: 6.5
+#| dpi: 300
+
+
+sa_wide = sa_coefs_all %>%
+  pivot_wider(
+    id_cols = model,
+    names_from = term,
+    values_from = c(estimate, conf.high, conf.low)
+  )
+
+satt_simp_CI <-  tidy(fit_sa_lm, conf.int = TRUE) %>%
+  # group_by(model) %>%
+  summarise(
+    estimate = atanh((85 - Ai_sa) / Bi_sa) * estimate[2] + estimate[1],
+    UCI = atanh((85 - Ai_sa) / Bi_sa) * conf.high[2] + conf.high[1],
+    LCI = atanh((85 - Ai_sa) / Bi_sa) * conf.low[2] + conf.low[1]
+  ) %>% 
+  mutate(method = "Simplified OLS")
+
+satt_gen_CI <-  SA_coefs_gen %>%
+  # group_by(model) %>%
+  summarise(
+    estimate = atanh((85 - estimate[1]) / estimate[2]) * estimate[3] + estimate[4],
+    UCI = atanh((85 - conf.low[1]) /conf.high[2]) * conf.high[3] + conf.high[4],
+    LCI = atanh((85 - conf.high[1]) /conf.low[2]) * conf.low[3] + conf.low[4]
+  ) %>% 
+  mutate(method = "General Solution")
+
+bind_rows(satt_gen_CI, satt_simp_CI) %>%
+  ggplot() +
+  geom_errorbarh(aes(
+    xmin = LCI,
+    xmax = UCI,
+    y = method,
+    col = method
+  ), lwd = 1) +
+  geom_point(aes(estimate, method), size = 2)+
+  labs(
+    y = "Method",
+    x = "Temperature (\u00B0F)",
+    col = "Method"
+  ) +
+  ggsci::scale_color_startrek()
+  
+
+
+```
+
+# Comparison of Absorbed Energy
+
+The next comparison is with the OLS method and the general solution for AE. First is the coefficients for both models. Note that the $C$ and $D$ coefficients are carried over from the SA solution.
+
+```{r}
+#| label: tbl-aecoefs
+#| tbl-cap: "Absorbed Energy Coefficients" 
+
+cvn_data <- cvn_data %>% 
+  mutate(k2 = tanh((temp_f - sa_lm_coefs$estimate[1]) / sa_lm_coefs$estimate[2]))
+
+ae_lm_mod <- lm(cvn ~ k2, data = cvn_data)
+
+ae_lm_coefs <- tidy(ae_lm_mod, conf.int = TRUE) %>% 
+  mutate(term = ifelse(term=="k2", "B", "A")) %>% 
+  bind_rows(sa_lm_coefs) %>% 
+  arrange(term) %>% 
+  mutate(model = "Simplified OLS")
+
+AE_gen_coefs %>% 
+  bind_rows(ae_lm_coefs) %>% 
+   select(-c(p.value, statistic)) %>% 
+  mutate(across(where(is.numeric), ~round(.,2))) %>% 
+  arrange(term, model) %>% 
+  kableExtra::kable(format = "pipe")
+
+```
+
+# Plot of AE Solutions
+
+```{r}
+#| label: fig-aeplot
+#| fig-cap: "Plot of AE Solutions"
+#| dpi: 300
+#| fig-width: 6.5
+
+ae_wide <- ae_lm_coefs %>% 
+  bind_rows(AE_gen_coefs) %>% 
+  arrange(model) %>% 
+  pivot_wider(id_cols = model,names_from = term, values_from = estimate)
+  
+
+cvn_data %>%
+  ggplot(aes(temp_f, cvn)) +
+  geom_point() +
+  stat_function(
+    fun = func_ht,
+    args = list(ae_wide$A[1],
+                ae_wide$B[1],
+                ae_wide$C[1],
+                ae_wide$D[1]),
+    aes(col = "General"),
+    lwd = 1,
+    n = 301
+  ) +
+  stat_function(
+    fun = func_ht,
+    args = list(ae_wide$A[2],
+                ae_wide$B[2],
+                ae_wide$C[2],
+                ae_wide$D[2]),
+    aes(col = "Simplified OLS"),
+    lwd = 1,
+    n = 301
+  ) +
+  scale_y_continuous(breaks = scales::pretty_breaks()) +
+  labs(x = "Temperature (\u00B0F)",
+       y = "Shear Area (%)") +
+  scale_color_manual(
+    values = cols,
+    breaks = c("General", "Simplified OLS"),
+    name = "Solution"
+  )
+
+
+```
+
+# Bootstraps
+
+Because I can and bootstraps are awesome, end of story. ;) 
+
+When OLS regression is performed, the built-in assumption is that the error term, $\epsilon_i$ is normally distributed about the estimated mean. While this is a reasonable assumption most of the time, it can lead to biased estimates in some cases. In addition, OLS can be heavily influenced by outliers and a single regression solution can't inform the analyst if the solution would significantly change with or without the outliers. The solution to this problem is a technique known as bootstrapping. The way a bootstrap works is that if the original data set has $n$ observations then a sample of size $n$ is taken from the data set by randomly sampling one at a time with replacement. So so values are sampled more than once and some might not be at all. This process is repeated a large number of times, each time taking a new random sample with replacement. Then, a model is fit on each sample to see how the results change with different samples. The average of the model coefficients gives an unbiased estimate of the parameter with not underlying assumption of the distribution of it. In addition, model performance statistics can be collected for each model and aggregated to get a more complete picture of the uncertainty in things like the $R^2$. In @fig-aeboot 100 of the 1,000 bootstrapped models is plotted.
+
+```{r}
+#| label: fig-aeboot
+#| fig-cap: "AE Bootstraps"
+#| dpi: 300
+#| fig-height: 5
+#| fig-width: 6
+
+nsim <- 1e3
+# AE Bootstrap ------------------------------------------------------------
+
+fit_sa_on_bootstrap2 <- function(split) {
+  lm(
+    ae_ss_J ~ k1,
+    data = analysis(split)
+  )
+}
+
+fit_ae_on_bootstrap2 <- function(split) {
+  lm(
+    cvn ~ k2,
+    data = analysis(split)
+  )
+}
+
+#Create Bootstrap data frame
+boots <- cvn_data %>%
+  bootstraps(times = nsim,
+             apparent = FALSE)
+
+# Create nested models
+ae_models <-
+  boots %>%
+  mutate(
+    model = map(splits, fit_ae_on_bootstrap2),
+    coef_info = map(model, tidy),
+    glanced = map(model, glance)
+  )
+# Bootstrap coefficients
+ae_boot_coefs <-
+  ae_models %>%
+  unnest(coef_info)
+
+# Bootstrap Performance
+ae_boot_performance <-
+  ae_models %>%
+  unnest(glanced)
+
+ae_params <- ae_boot_coefs %>%
+  pivot_wider(id_cols = id,
+              names_from = term,
+              values_from = estimate) %>%
+  rename(intercept = "(Intercept)") %>%
+  mutate(id = 1:n())
+
+#Bootstrap confidence intervals
+
+bootCI <- int_pctl(ae_models, coef_info) %>% 
+  mutate(model = "LM Bootstrap",
+         term = ifelse(term=="k2","B","A")) %>% 
+  rename(estimate =.estimate, conf.low =.lower,conf.high = .upper)
+  
+# Grab random sample of 100 solutions
+ae_param_samp <- slice_sample(ae_params,n = 75)
+
+# Regression samples plot -------------------------------------------------
+
+
+ggplot(cvn_data,
+       aes(k2, cvn)) +
+  geom_point() +
+  # geom_line(aes(y = predict(ae_lm_mod)),
+  #           col = 'red',
+  #           lwd = 0.25) +
+  geom_abline(
+    aes(
+      slope = k2,
+      intercept = intercept,
+      group = id
+    ),
+    data = ae_param_samp,
+    col = 'blue',
+    alpha = 0.05
+  ) +
+  # geom_smooth(method = "lm", col='red')+
+  labs(
+    title = "Absorbed Energy",
+    subtitle = "Bootsrap Resampling",
+    # use latex in x title
+    x = unname(TeX(
+      "$k_2 = tanh \\left( \\frac{T -D_{SA}}{C_{SA}} \\right)$"
+    )),
+    y = "Absorbed Energy (ft-lbs)",
+    caption = "100 Random Bootstraps"
+  )
+
+```
+
+# Error Bars
+This section will show the range of confidence intervals for upper shelf energy for the different methods. Since the confidence intervals overlap, it would not be rejected that the two solutions are equivalent at a 95% confidence level. The mean estimate for each of the methods is almost identical.
+
+```{r}
+#| label: fig-ae-error
+#| fig-cap: "Comparision of Upper shelf Energy"
+#| dpi: 300
+
+AE_gen_coefs %>%
+  bind_rows(ae_lm_coefs, bootCI) %>%
+  select(estimate, conf.low, conf.high, term, model) %>%
+  pivot_wider(
+    id_cols = model,
+    names_from = term,
+    values_from = c(estimate, conf.low, conf.high)
+  ) %>%
+  group_by(model) %>%
+  summarise(
+    estimate = estimate_A + estimate_B,
+    us_low = conf.low_A + conf.low_B,
+    us_high = conf.high_A + conf.high_A
+  ) %>%
+  ggplot() +
+  geom_errorbarh(aes(
+    xmin = us_low,
+    xmax = us_high,
+    y = model,
+    col = model
+  ),
+  lwd = 1)+
+  geom_point(aes(estimate, model), size = 3)
+
+
+```

@@ -1,8 +1,9 @@
 ---
-title: "Simplified Hyperbolic Tangent"
-author: "Authors TBD"
+title: "A Simplified Implementation to Estimate the Upper Shelf Energy and Transition Temperature from Limited Charpy V-Notch Data Sets"
+author: "Switzner, Anderson, Martin, Rosenfeld, Ali, Patrick, Veloo"
 format: docx
 editor: visual3
+number-sections: true
 chunk_output_type: console
 execute:
   echo: false
@@ -10,9 +11,19 @@ execute:
   fig-width: 6.5
 ---
 
+# Abstract{-}
+
+Pipeline feature toughness is a critical input for fitness for service assessments and MAOP reconfirmation based on the ECA approach. For these applications, toughness has historically been estimated from laboratory Charpy V-Notch (CVN) testing via the Upper Shelf Energy (USE) and 85% Shear Appearance (ductile to brittle) Transition Temperature (SATT). Two approaches are widely accepted for estimation of the USE and SATT from a set of CVN tests performed over a range of temperatures: (1) curve fitting a hyperbolic tangent to the experimental data, and (2) analytical solution of a system of empirical equations. 
+
+From a practical perspective, the unconstrained curve fitting method (1) is only accurate when the test data span a sufficient range of temperatures to sample both the lower and upper shelves and contain multiple points in the transition region. Additionally curve fitting is a manual, time-consuming procedure with poor repeatability.
+
+Because of these challenges, pipeline operators often use the analytical solution method (2) that was originally proposed by Rosenfeld (Oil and Gas Journal, 1997) and later implemented in API-579 9F.2.2. However, this approach uses assumptions that can lead to over- or under-conservative estimates of toughness. Additionally, the uncertainty associated with the solution has not been quantified. As a result, both approaches often require the pipeline operator to accept unknown and potentially significant uncertainty in their toughness estimates.
+
+This paper will provide a consistent and repeatable method to estimate the ductile to brittle transition temperature and upper shelf energy for nearly any set of CVN data. The method utilizes the hyperbolic tangent approach by applying several simplifying assumptions to effectively constrain the curve fitting to a physically meaningful range. It will be shown that this approach increases the accuracy and reliability of the calculated values for incomplete datasets. We will identify the physical meaning of the assumptions and show how to estimate the uncertainty such that conservatism can be maintained for subsequent calculations. 
+
 # Hyperbolic Tangent
 
-When performing Charpy V-notch testing over multiple temperatures the result will be a sigmoidal-shaped curve that is asymptotic at the upper and lower temperatures as seen in @fig-pltdata. But the relationship between the temperature and Absorbed Energy (AE) or Shear Area (SA) is not the classic sigmoid function but a hyperbolic tangent (HT) function with four independent coefficients (A, B, C, D) shown in @eq-HT.
+When performing CVN testing over multiple temperatures the result will be a sigmoidal-shaped curve that is asymptotic at the upper and lower temperatures as seen in @fig-pltdata. But the relationship between the temperature and Absorbed Energy (AE) or Shear Area (SA) is not the classic sigmoid function but a hyperbolic tangent (HT) function with four independent coefficients (A, B, C, D) shown in @eq-HT.
 
 ```{r}
 #| label: read-data
@@ -221,7 +232,7 @@ $$
 \end{align}
 $$ {#eq-HT}
 
-The physical meaning of the four coefficients is shown in @fig-HT. The upper shelf absorbed energy or maximum shear area are equal to $A + B$ and the lower shelf and minimum shear area are $A - B$. The shear appearance transition temperature (SATT) is the temperature that corresponds to 85% shear area. If the material is tested throughout the entire temperature range so as to capture all or part of the asymptotic portion of the curves the upper and lower ranges can be approximated by plotting the data. However, if only part of the curve is tested, the upper and lower shelf is a rough guess at best and estimating the SATT is even more difficult without regressing the data to the hyperbolic tangent.
+The physical meaning of the four coefficients is shown in @fig-HT. The upper shelf absorbed energy or maximum shear area are equal to $A + B$ and the lower shelf and minimum shear area are $A - B$. The shear appearance transition temperature (SATT) is the temperature that corresponds to 85% shear area. If the material is tested throughout the entire temperature range so as to capture all or part of the asymptotic portion of the curves, the upper and lower ranges can be approximated by plotting the data and manually fitting a curve. However, if only part of the curve is tested, the upper and lower shelf is a rough guess at best and estimating the SATT is even more difficult without fitting the data to the hyperbolic tangent function.
 
 ```{r}
 #| label: fig-HT
@@ -427,7 +438,7 @@ plt_cvn +
 
 # Solution to Hyperbolic Tangent
 
-Unfortunately, there is no closed-form solution to @eq-HT, solving it requires one of several numerical methods known as non-linear least squares (NLS) regression. NLS attempts to fit the observed data to a form of $y = f(x, \beta)$ where f is a some nonlinear function such as an exponential or trigonometric functions through successive approximations. Any type of regression technique (non-linear or linear) seeks to minimize the sum of the squares of the residuals (RSS). The residual is the difference between the observed (measured) $y$ value, $y_i$ and the predicted value of the model $\hat{y}$.
+Unfortunately, there is no closed-form solution to @eq-HT, solving it requires one of several numerical methods known as non-linear least squares (NLS) regression.  Open-source programming languages such as Python or R have several libraries that can perform NLS regression. NLS attempts to fit the observed data to a form of $y = f(x, \beta)$ where f is a some nonlinear function such as an exponential or trigonometric functions through successive approximations. Any type of regression technique (non-linear or linear) seeks to minimize the sum of the squares of the residuals (RSS). The residual is the difference between the observed (measured) $y$ value, $y_i$ and the predicted value of the model $\hat{y}$.
 
 Therefore the quantity to minimize is shown in @eq-rss.
 
@@ -435,15 +446,17 @@ $$
 RSS = \sum_{i =1}^n (y_i - \hat{y})^2
 $$ {#eq-rss}
 
-Since the ability to solve this non-linear regression is relying on numerical optimization methods it requires initial starting values for the four coefficients for the algorithm. The down side to some of these methods is that if the initial values are poor or if there are several outliers in the data the solution can fail to converge or get "stuck" in a local minimum and return a solution that is far from optimal. Although most algorithms have methodologies to avoid getting stuck in a local minimum it is quite common for the NLS to fail with poor initial values especially when there are outliers in the data as well.
+Since the ability to solve this non-linear regression is relying on numerical optimization methods, it requires initial starting values for the four coefficients. The down-side to these methods is that if the initial values are poor or if there are several outliers or if the data is incomplete, the solution can fail to converge or get "stuck" in a local minimum and return a solution that is far from optimal. Although most algorithms have methodologies to avoid getting stuck in a local minimum it is common for the NLS to fail with poor initial values especially when there are outliers in the data as well.
 
-However, with some of simplifying assumptions the hyperbolic non-linear tangent can be transformed to a linear regression model that does have a closed-form solution to minimize the RSS through ordinary least squares regression (OLS) regression of the form $y_i = \alpha x_i + \beta + \epsilon_i$ where $\epsilon_i$ is the residual error. The benefit to the OLS regression methodology is that since the solution is closed-form it is guaranteed to find the optimum solution for the given data, in addition it can be done in a spreadsheet or even by hand if needed. In the OLS solution, $\alpha$ and $\beta$ are estimated such as to minimize $\epsilon_i$. Since it is a given that the minimum and maximum percent SA is physically bounded by 0 and 100 therefore $A + B\leq 100$ and $A - B \leq 100$. Also looking at @fig-HT it can be seen that the value of $A$ and $B$ are similar with $A$ being only slightly larger than $B$. Therefore a reasonable initial estimate for $A$ and $B$ for the SA solution would be about 51 and 49 respectively. Now that $A$ and $B$ are fixed values, that leaves the @eq-HT with only two unknowns and rearranging the terms and solving for temperature produces the more useful form of $T = C \ atanh\left(\frac{SA - A}{B}\right)+ D$ and since everything in the argument for the $atanh$ is known, the entire $atanh$ term becomes an independent variable $k_1 = atanh\left(\frac{SA -A}{B}\right)$ and the HT function is transformed into a linear equation, $T = C\ k_1+D$ which can be solved by OLS regression. The solution to this will produce two coefficients, slope and intercept corresponding to the $C$ and $D$ respectively. Referring to @fig-HT observe that $D$ is the center of the linear transition area between the upper and lower asymptote and and appears to be approximately the same for SA or AE when looking at @fig-pltdata. Using this assumption and the solution from SA, @eq-HT can again be linearized to be solved by OLS regression. Since $C_{sa}$ and $D_{sa}$ (subscript indicates that they are from the SA solution) are known from the SA solution, inserting them into @eq-HT, all the terms in the $tanh$ function are known and it can be reduced to $k_2 = tanh\left(\frac{T-D_{sa}}{C_{sa}}\right)$ and the HT equation becomes, $AE = A + B \ k_2$ which can also be solved with OLS regression.
+However, with some of simplifying assumptions, the non-linear hyperbolic tangent can be transformed to a linear regression problem that does have a closed-form solution to minimize the RSS through ordinary least squares regression (OLS) of the form $y_i = \alpha x_i + \beta + \epsilon_i$ where $\epsilon_i$ is the residual error. The benefit to the OLS regression methodology is that since the solution is closed-form it is guaranteed to find a solution for the data, in addition it can be done in a spreadsheet or even by hand if needed. In the OLS solution, $\alpha$ and $\beta$ are estimated such as to minimize $\epsilon_i$. 
 
-Using the same simplifying assumptions mentioned in this section, the problem can also be solved using NLS for the two remaining coefficients. This can be helpful if the NLS solution does not converge when trying to solve all four coefficients at once for some reason. Though the linearized form of the HT is functionally equivalent to the two term hyperbolic tangent the OLS solution can be influenced by data points that are far from the mean and have high residuals, what are known as high *leverage* points. These single points can have disproportionate influence on the slope of the OLS regression as where they have far less influence in a NLS regression solution since that is the region that are asymptotic to the minimum or maximum values. In these cases with high leverage points are present, either removing the high residual observation if they seem to be erroneous or using the two term NLS solution may be preferable. In @lo_data the solutions for absorbed energy and shear area are shown with a set of data that has significant scatter.
+Since it is a given that the minimum and maximum SA is physically bounded by 0 and 100 percent therefore $A + B\leq 100$ and $A - B \geq 0$. Also looking at @fig-HT it can be seen that the value of $A$ and $B$ are similar with $A$ being only slightly larger than $B$. Therefore a reasonable initial estimate for $A$ and $B$ for the SA solution would be about 51 and 49 respectively. Now that $A$ and $B$ are fixed values, that leaves the @eq-HT with only two unknowns and rearranging the terms and solving for temperature produces the more useful form of $T = C \ atanh\left(\frac{SA - A}{B}\right)+ D$. Since everything in the argument for the $atanh$ is known, the entire $atanh$ term becomes an independent variable $k_1 = atanh\left(\frac{SA -A}{B}\right)$ and the HT function is transformed into a linear equation, $T = C\ k_1+D$ which can be solved by OLS regression. The solution to this will produce two coefficients, slope and intercept corresponding to the $C$ and $D$ respectively. Referring to @fig-HT observe that $D$ is the center of the linear transition area between the upper and lower asymptote and and appears to be approximately the same for SA or AE when looking at @fig-pltdata. Using this assumption and the solution from SA, @eq-HT can again be linearized to be solved by OLS regression. Since $C_{sa}$ and $D_{sa}$ (subscript indicates that they are from the SA solution) are known from the SA solution, inserting them into @eq-HT, all the terms in the $tanh$ function are known and it can be reduced to $k_2 = tanh\left(\frac{T-D_{sa}}{C_{sa}}\right)$ and the HT equation becomes, $AE = A + B \ k_2$ which can also be solved with OLS regression where the slope and intercept from the solution is equal to $B$ and $A$ respectively.
+
+Using the same simplifying assumptions mentioned in this section, the problem can also be solved using NLS for the two remaining coefficients. This can be helpful if the NLS solution does not converge when trying to solve all four coefficients at once for some reason. Though the linearized form of the HT is functionally equivalent to the two term hyperbolic tangent the OLS solution can be influenced by data points that are far from the mean and have high residuals, what are known as high *leverage* points. These single points can have disproportionate influence on the slope of the OLS regression as where they have far less influence in a NLS regression solution since the high leverage points will be in the region that is asymptotic to the minimum or maximum values. In the cases where high leverage points are present, either removing the high residual observation(s) if they seem to be erroneous or using the two term NLS solution may be preferable. In @sec-lodata the solutions for absorbed energy and shear area are shown with a set of data that has significant scatter.
 
 # Results
 
-While this appears to be a workable solution, it does involve some assumptions. To judge the suitability of this solution it will be used to solve the example data shown in @fig-pltdata and the results will be compared to the general solution where all four coefficients are solved simultaneously without the simplifying assumptions. Since any model is an approximation to a physical phenomena and any measurement is going to have some amount of error regardless of precision there is uncertainty in the solutions which are represented by the standard errors for the coefficients. Note that since $A$ and $B$ were assumed for the SA solution there is no confidence intervals or standard error for the OLS solution so they are set to zero. The results are plotted in @fig-sa.coefsCI.
+While this appears to be a workable solution, it does involve some assumptions. To judge the suitability of the simplified solutions it will be used to solve the HT for the example data shown in @fig-pltdata and the results will be compared to the general solution where all four coefficients are solved simultaneously. Since any model is an approximation to a physical phenomena and any measurement is going to have some amount of error regardless of precision, there is uncertainty in the solutions which are represented by the standard errors for the coefficients. Note that since $A$ and $B$ were fixed at a value for the SA solution, there is no confidence intervals or standard error for the OLS solution for these so the standard error and confidence intervals are set to zero for $A$ and $B$ for the SA solution. The results are plotted in @fig-sa.coefsCI and a listing of the coefficients and confidence intervals for the SA solutions is shown in @tbl-results. Viewing the confidence intervals for $A$ and $B$ for the general solution, it appears that 51 and 49 were reasonable assumptions for $A$ and $B$ since they are within the confidence intervals for both coefficients.
 
 ```{r}
 #| label: tbl-results
@@ -470,6 +483,11 @@ sa_coefs_all <-  sa_lm_coefs %>%
 
 sa_coefs_all %>%
   select(-c(p.value, statistic)) %>%
+  pivot_wider(id_cols = model,
+              names_from = term,
+              values_from = estimate) %>%
+  rename(Model = model) %>%
+  arrange(Model) %>%
   mutate(across(.cols = where(is.numeric), ~ round(., 2))) %>%
   kableExtra::kable(format = "pipe")
 
@@ -477,10 +495,11 @@ sa_coefs_all %>%
 ```
 
 # Shear Area Coefficients
+This is a plot of the confidence intervals for $C$ and $D$ for all three solutions with the estimated value plotted a single point for each. Recall that for the simplified solutions $A$ and $B$ were fixed values and do not have a confidence interval.
 
 ```{r}
 #| label: fig-sa.coefsCI
-#| fig-cap: "Coefficient Confidence Intervals for Shear Area Solutions"
+#| fig-cap: "Confidence Intervals for Shear Area Solutions"
 #| fig-width: 6.5
 
 sa_coefs_all %>%
@@ -504,7 +523,7 @@ sa_coefs_all %>%
 
 # Plot of SA Solutions
 
-Though there are visible differences in the model fit that can be seen in @fig-solplt especially through the transition area. However, at the 85% shear appearance area the two models start to converge though some differences are still evident. To demonstrate these differences the 95% confidence intervals are shown in the plot.
+Using the values from all three solutions they were used to plot the HT for each one. Though there are visible differences in the model fit that can be seen in @fig-solplt especially through the transition area. However, at the 85% shear appearance area the two models start to converge though some differences are still evident. To demonstrate these differences, the 95% confidence intervals are shown in @fig-satterr.
 
 ```{r}
 #| label: fig-solplt
@@ -573,7 +592,12 @@ cvn_data %>%
 
 # Comparison of SATT
 
-This compares the confidence intervals of the SATT for the two methods . The mean estimated SATT is nearly equal for the two methods but the width of the confidence interval for the OLS method is smaller due to $A$ and $B$ being fixed with no error associated with them. Since the two 95% confidence intervals overlap it indicates that given the uncertainty in either model the differences in the predicted SATT are not significant at a 95% confidence level.
+This plot compares the confidence intervals of the SATT for the two methods. Since the four coefficients are known and the SATT is by definition the temperature at 85% SA, the SATT can be calculated bt solving the HT for temperature and putting 85 in for the SA.
+$$
+SATT = atanh\left(\frac{85 -A}{B}\right)C+ D
+$$ {#eq-satt}
+
+The mean estimated SATT is nearly equal for the three methods but the width of the confidence interval for the simplified methods is smaller due to $A$ and $B$ being fixed with no error associated with them. Since the two 95% confidence intervals overlap it indicates that given the uncertainty in either model, the differences in the predicted SATT are not significant.
 
 ```{r}
 #| label: fig-satterr
@@ -643,7 +667,7 @@ sa_cI_all %>%
 
 # Comparison of Absorbed Energy
 
-The next comparison is with the OLS method and the general solution for AE. First is the coefficients for both models. Note that the $C$ and $D$ coefficients are carried over from the SA solution.
+The next comparison is with the simplified methods and the general solution for AE. @tbl-aecoefs is the coefficients for all three models. Note that the $C$ and $D$ coefficients are carried over from the SA solution for the simplified methods.
 
 ```{r}
 #| label: tbl-aecoefs
@@ -667,19 +691,23 @@ ae_simp_coefs <- tidy(fit_cvn_simp, conf.int = TRUE) %>%
 
 
 ae_coefs_all <- AE_gen_coefs %>% 
-  bind_rows(ae_lm_coefs, ae_simp_coefs)
+  bind_rows(ae_lm_coefs, ae_simp_coefs) 
 
-ae_coefs_all %>% 
-   select(-c(p.value, statistic)) %>% 
-  mutate(across(where(is.numeric), ~round(.,2))) %>% 
-  arrange(term, model) %>% 
+ae_coefs_all %>%
+  rename(Model = model) %>%
+  pivot_wider(id_cols = Model,
+              names_from = term,
+              values_from = estimate) %>%
+  arrange(Model) %>% 
+  mutate(across(where(is.numeric), ~ round(., 2))) %>%
+  # arrange(term, model) %>%
   kableExtra::kable(format = "pipe")
 
 ```
 
 # Plot of Absorbed Energy Solution
 
-This plot will show the HT solutions for the different types of solutions for comparison. With consistent data, the three solution methods are all approximately the same. See @fig-ae-error for a comparison of the uncertainty in the upper shelf estimates.
+This plot will show the HT solutions for the three solutions for comparison. With consistent data, the three solution methods are all approximately the same. See @fig-ae-error for a comparison of the uncertainty in the upper shelf estimates.
 
 ```{r}
 #| label: fig-aeplot
@@ -725,9 +753,22 @@ cvn_data %>%
     lwd = 1,
     n = 301
   ) +
+  geom_hline(
+    yintercept = tdy_cvn$estimate[1] + tdy_cvn$estimate[2],
+    lty = 2,
+    lwd = 0.75,
+    col = 'grey50'
+  ) +
   scale_y_continuous(breaks = scales::pretty_breaks()) +
+  annotate(
+    "text",
+    x = 0,
+    y = tdy_cvn$estimate[1] + tdy_cvn$estimate[2],
+    label = "Upper Shelf",
+    vjust = 1
+  ) +
   labs(x = "Temperature (\u00B0F)",
-       y = "Shear Area (%)") +
+       y = "Absorbed Energy (ft-lbs)") +
   scale_color_manual(
     values = cols,
     breaks = c("General", "Simplified HT", "Simplified OLS"),
@@ -741,7 +782,7 @@ cvn_data %>%
 
 Because I can and bootstraps are awesome, end of story. ;)
 
-When OLS regression is performed, the built-in assumption is that the error term, $\epsilon_i$ is normally distributed about the estimated mean. While this is a reasonable assumption most of the time, it can lead to biased estimates in some cases. In addition, OLS can be heavily influenced by outliers and a single regression solution can't inform the analyst if the solution would significantly change with or without the outliers. The solution to this problem is a technique known as bootstrapping. The way a bootstrap works is that if the original data set has $n$ observations then a sample of size $n$ is taken from the data set by randomly sampling one at a time with replacement. So so values are sampled more than once and some might not be at all. This process is repeated a large number of times, each time taking a new random sample with replacement. Then, a model is fit on each sample to see how the results change with different samples. The average of the model coefficients gives an unbiased estimate of the parameter with not underlying assumption of the distribution of it. In addition, model performance statistics can be collected for each model and aggregated to get a more complete picture of the uncertainty in things like the $R^2$. In @fig-aeboot 100 of the 1,000 bootstrapped models is plotted.
+When OLS regression is performed, the built-in assumption is that the error term, $\epsilon_i$ is normally distributed about the estimated mean. While this is a reasonable assumption most of the time, it can lead to biased estimates in some cases. In addition, OLS can be heavily influenced by outliers and a single regression solution can't inform the analyst if the solution would significantly change without the outliers. The solution to this problem is a technique known as bootstrapping. The way a bootstrap works is that if the original data set has $n$ observations then a sample of size $n$ is taken from the data set by randomly sampling one at a time with replacement. So some values are sampled more than once and some might not be at all. This process is repeated a large number of times, each time taking a new random sample with replacement. Then, a model is fit on each sample to see how the results change with different samples. The average of the model coefficients gives an unbiased estimate of the parameter with no underlying assumption of the distribution of it. In addition, model performance statistics can be collected for each model and aggregated to get a more complete picture of the uncertainty in things like the $R^2$. In @fig-aeboot 100 of the 1,000 bootstrapped models is plotted.
 
 ```{r}
 #| label: fig-aeboot
@@ -755,7 +796,7 @@ nsim <- 1e3
 
 fit_sa_on_bootstrap2 <- function(split) {
   lm(
-    ae_ss_J ~ k1,
+  sa_ss ~ k1,
     data = analysis(split)
   )
 }
@@ -842,7 +883,7 @@ ggplot(cvn_data,
 
 # Absorbed Energy Upper Shelf Confidence Intervals
 
-This section will show the range of confidence intervals for upper shelf energy for the different methods. Since the confidence intervals overlap, it would not be rejected that the two solutions are equivalent at a 95% confidence level. The mean estimate for each of the methods is almost identical. The two simplified methods show a smaller range of uncertainty relative to the general. This is an artifact that two of the four parameters are fixed and therefore fewer ways for the model to reflect the uncertainty in the data.
+This plot will show the range of confidence intervals for upper shelf energy for the different methods. Since the confidence intervals overlap, it would not be rejected that the two solutions are equivalent at a 95% confidence level. The mean estimate for each of the methods is almost identical. The two simplified methods show a smaller range of uncertainty relative to the general. This is an artifact that two of the four parameters are fixed and therefore fewer ways for the model to reflect the uncertainty in the data.
 
 ```{r}
 #| label: fig-ae-error
@@ -871,7 +912,7 @@ ae_coefs_all %>%
   ),
   lwd = 1)+
   geom_point(aes(estimate, model), size = 3)+
-  labs(x = "Temperature (\u00B0F)",
+  labs(x = "Absorbed Energy (ft-lbs)",
        y = "Model",
        col = "Model")+
   scale_color_brewer(palette = "Set1")
@@ -879,9 +920,9 @@ ae_coefs_all %>%
 
 ```
 
-# Less Optimal data {#lo_data}
+# Less Optimal data {#sec-lodata}
 
-In this section a set of data that exhibits significant scatter and inconsistencies is shown against the three types of solutions for both shear area and absorbed energy. In @fig-badsa-data it can be seen that the SATT is for either of the simplified solutions is approximately within$\pm$ of the general solution. Which is probably not a difference of any practical implications.
+In this section, a set of data that exhibits significant scatter and inconsistencies is shown against the three types of solutions for both shear area and absorbed energy. In @fig-badsa-data it can be seen that there are several challenges in this data set. The SA decreases between 140 and 145°F and the percent SA jumps from about 50% to 100% over a change of 5°F. For the simplified solutions the SATT is approximately within$\pm$ 10°F of the general solution. Which is probably not a difference of any practical considerations.
 
 ```{r}
 #| label: fig-badsa-data
@@ -896,7 +937,9 @@ Ai_sa <- 51 #initial estimates A + B <= 100
 Bi_sa <- 49 #initial estimates
 
 cvn_data_bad <- tim_cvn %>% 
-  filter(id==ids[idx]) %>% 
+  filter(id==ids[idx], 
+         # temp_f!=145
+         ) %>%
   mutate(k1 = atanh((sa_ss - Ai_sa) / Bi_sa))
 
 Ci <-  IQR(cvn_data_bad$temp_f) / 2 #inner quartile range/2 = Ci
@@ -954,6 +997,13 @@ sa_coefs_all_bad <-  sa_lm_coefs_bad %>%
   bind_rows(SA_coefs_gen_bad) %>%
   mutate(across(.cols = everything(), ~ ifelse(is.na(.), 0, .))) %>%
   arrange(term, model)
+
+
+# sa_coefs_all_bad %>% 
+#   select(model, term, estimate) %>% 
+#   pivot_wider(id_cols = model, names_from = term, values_from = estimate) %>% 
+#   group_by(model) %>% 
+#   summarise(SATT = C*atanh((85 -A)/B)+D)
 
   
 cvn_data_bad %>%
@@ -1021,8 +1071,11 @@ cvn_data_bad %>%
 
 ```
 
-## Absorbed Energy with High Scatter Data  
-In this section the same data that was used in @fig-badsa-data will be used for the absorbed energy and the three solution methods compared. Comparing the model solutions in @fig-ae-baddata it can be seen that the errors propagated from the shear area solution made a significant difference for the simplified solutions.  There is about a 25% difference in upper shelf energy between the general solution and the simplified OLS solution with the simplified HT solution splitting the difference between them. Even though the linearized OLS solution will give nearly the same solution as the simplified HT solution with consistent data, when there are large outliers and inconsistent data the OLS solution is more influenced by these outlier observations compared to the HT solutions.
+## Absorbed Energy with High Scatter Data
+
+In this section, the same data that was used in @fig-badsa-data will be used for the absorbed energy and the three solution methods compared. Comparing the model solutions in @fig-ae-baddata it can be seen that the errors propagated from the shear area solution made a significant difference for the simplified solutions. There is about a 25% difference in upper shelf energy between the general solution and the simplified OLS solution with the simplified HT solution splitting the difference between them. Even though the linearized OLS solution will give nearly the same solution as the simplified HT solution with consistent data, when there are large outliers and inconsistent data the OLS solution is more influenced by these outlier observations compared to the HT solutions.
+
+Even though the solutions produced by simplified methods were not very close to the general solution, in both cases they produced conservative answers. By removing the inconsistent data at 145°F and refitting the models, it brought the upper shelf AE for the simplified OLS model about 20% closer to the general solution. The simplified HT and general model were largely unaffected by removing the outliers.
 
 ```{r}
 #| label: fig-ae-baddata
@@ -1075,7 +1128,7 @@ AE_coefs_simp_bad <- tidy(fit_cvn_simp_bad, conf.int = FALSE) %>%
 cvn_data_bad <- cvn_data_bad %>% 
   mutate(k2 = tanh((temp_f - sa_lm_coefs_bad$estimate[1]) / sa_lm_coefs_bad$estimate[2]))
 
-ae_lm_mod_bad <- lm(cvn ~ k2, data = cvn_data_bad)
+ae_lm_mod_bad <- lm(cvn ~ k2, data =  cvn_data_bad)
 
 ae_lm_coefs_bad <- tidy(ae_lm_mod_bad, conf.int = FALSE) %>% 
   mutate(term = ifelse(term=="k2", "B", "A")) %>% 
@@ -1087,6 +1140,11 @@ ae_coefs_all_bad <- AE_gen_coefs_bad %>%
   bind_rows(ae_lm_coefs_bad,AE_coefs_simp_bad) %>% 
   arrange(term, model)
 
+# ae_coefs_all_bad %>% 
+#   select(model, term, estimate) %>% 
+#   pivot_wider(id_cols = model, names_from = term, values_from = estimate) %>% 
+#   group_by(model) %>% 
+#   summarise(USE = A + B)
 
 # plot AE solutions -------------------------------------------------------
 
@@ -1132,7 +1190,7 @@ cvn_data_bad %>%
   scale_y_continuous(breaks = scales::pretty_breaks()) +
   scale_x_continuous(breaks = scales::pretty_breaks()) +
   labs(x = "Temperature (\u00B0F)",
-       y = "Absorbed Energy") +
+       y = "Absorbed Energy (ft-lbs)") +
   scale_color_manual(
     values = cols,
     breaks = c("General", "Simplified HT", "Simplified OLS"),
@@ -1141,3 +1199,5 @@ cvn_data_bad %>%
 
 ```
 
+# Conclusion 
+This paper has shown a method of fitting CVN data to the hyperbolic tangent model that is conservative as well as repeatable and allows for quantification of the uncertainty so the user can make informed decisions about the operation of a pipeline.
